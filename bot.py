@@ -50,6 +50,16 @@ import sounddevice as sd
 import soundfile as sf
 from dotenv import load_dotenv
 
+from bharat.answer import (
+    NO_MATCH,
+    build_context,
+    entries_from_chunks,
+    entries_from_moss,
+    source_names,
+    with_citations,
+)
+from bharat.retrieval import LocalIndex
+
 # -- Config -------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -60,6 +70,8 @@ STT_MODEL = os.getenv("SARVAM_STT_MODEL", "saaras:v3")
 CHAT_MODEL = os.getenv("SARVAM_CHAT_MODEL", "sarvam-105b")
 TTS_MODEL = os.getenv("SARVAM_TTS_MODEL", "bulbul:v3")
 TTS_SPEAKER = os.getenv("SARVAM_TTS_SPEAKER", "priya")
+
+SCHEMES_DIR = SCRIPT_DIR / "data" / "schemes"
 
 MOSS_PROJECT_ID = os.getenv("MOSS_PROJECT_ID", "")
 MOSS_PROJECT_KEY = os.getenv("MOSS_PROJECT_KEY", "")
@@ -114,11 +126,8 @@ def _bearer_headers() -> dict:
 
 
 def _check_env():
-    missing = [
-        v
-        for v in ["SARVAM_API_KEY", "MOSS_PROJECT_ID", "MOSS_PROJECT_KEY"]
-        if not os.getenv(v)
-    ]
+    # Moss is optional: without it the agent uses the local index.
+    missing = [v for v in ["SARVAM_API_KEY"] if not os.getenv(v)]
     if missing:
         print(
             f"ERROR: missing environment variables: {', '.join(missing)}",
@@ -264,28 +273,37 @@ def transcribe(audio_path: Path) -> str:
 # -- Moss RAG retrieval -------------------------------------------------------
 
 
-async def retrieve(question: str, moss_client) -> str:
-    """Query Moss index for relevant scheme context."""
-    try:
-        from moss import QueryOptions
-    except ImportError:
-        print("ERROR: moss not installed. Run: pip install moss", file=sys.stderr)
-        sys.exit(1)
+async def retrieve(
+    question: str, moss_client=None, local_index: LocalIndex | None = None
+) -> tuple[str, list[str]]:
+    """Return (prompt context, source names) for the question.
 
+    Uses the Moss index when it is configured, and the local BM25 index
+    otherwise, so the agent runs with only a Sarvam key.
+    """
     print("   searching ...")
-    results = await moss_client.query(
-        MOSS_INDEX_NAME,
-        question,
-        QueryOptions(top_k=TOP_K, alpha=0.75),
-    )
-    if not results.docs:
-        return "No relevant information found in the knowledge base."
 
-    parts = []
-    for doc in results.docs:
-        source = (doc.metadata or {}).get("source", doc.id)
-        parts.append(f"[Source: {source}]\n{doc.text}")
-    return "\n\n---\n\n".join(parts)
+    if moss_client is not None:
+        from moss import QueryOptions
+
+        results = await moss_client.query(
+            MOSS_INDEX_NAME,
+            question,
+            QueryOptions(top_k=TOP_K, alpha=0.75),
+        )
+        if not results.docs:
+            return build_context([]), []
+        entries = entries_from_moss(results.docs)
+        return build_context(entries), source_names(entries)
+
+    if local_index is None:
+        raise RuntimeError("No retriever configured")
+
+    hits = local_index.search(question, top_k=TOP_K)
+    if not hits:
+        return build_context([]), []
+    entries = entries_from_chunks(hits)
+    return build_context(entries), source_names(entries)
 
 
 # -- Generate answer (Sarvam Chat) --------------------------------------------
@@ -382,23 +400,30 @@ async def live_loop(
     record_seconds: int = 5, use_vad: bool = False, text_mode: bool = False
 ):
     """Continuous voice-to-voice conversation loop."""
-    try:
-        from moss import MossClient
-    except ImportError:
-        print("ERROR: moss not installed. Run: pip install moss", file=sys.stderr)
-        sys.exit(1)
-
     _check_env()
 
     print("\nLoading knowledge base ...")
-    moss_client = MossClient(MOSS_PROJECT_ID, MOSS_PROJECT_KEY)
-    try:
-        await moss_client.load_index(MOSS_INDEX_NAME)
-        print(f"Ready: {MOSS_INDEX_NAME}\n")
-    except Exception as e:
-        print(f"ERROR: could not load index '{MOSS_INDEX_NAME}': {e}", file=sys.stderr)
-        print("Run create_index.py first.", file=sys.stderr)
-        sys.exit(1)
+    moss_client = None
+    local_index = None
+
+    if MOSS_PROJECT_ID and MOSS_PROJECT_KEY:
+        try:
+            from moss import MossClient
+
+            moss_client = MossClient(MOSS_PROJECT_ID, MOSS_PROJECT_KEY)
+            await moss_client.load_index(MOSS_INDEX_NAME)
+            print(f"Ready: Moss index '{MOSS_INDEX_NAME}'\n")
+        except Exception as e:
+            print(f"WARNING: Moss unavailable ({e}); using the local index.",
+                  file=sys.stderr)
+            moss_client = None
+
+    if moss_client is None:
+        local_index = LocalIndex.from_directory(SCHEMES_DIR)
+        print(
+            f"Ready: local index, {len(local_index.chunks)} chunks from "
+            f"{SCHEMES_DIR.name}/\n"
+        )
 
     conversation_history = []
     turn = 0
@@ -445,8 +470,13 @@ async def live_loop(
                 break
 
             # -- RAG + LLM + TTS ----------------------------------------------
-            context = await retrieve(question, moss_client)
-            answer = generate_answer(question, context, conversation_history)
+            context, sources = await retrieve(question, moss_client, local_index)
+            if not sources:
+                answer = NO_MATCH
+                print(f"   no match for: {question}")
+            else:
+                answer = generate_answer(question, context, conversation_history)
+                answer = with_citations(answer, sources)
 
             conversation_history.append({"role": "user", "content": question})
             conversation_history.append({"role": "assistant", "content": answer})

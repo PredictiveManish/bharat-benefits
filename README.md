@@ -15,7 +15,7 @@ voice / text input
     |
 Sarvam STT  (saaras:v3)         converts speech to text
     |
-Moss retrieval                  finds relevant scheme snippets from local knowledge base
+Retrieval                       finds relevant scheme sections (Moss, or built-in local index)
     |
 Sarvam Chat Completion          generates a grounded, voice-friendly answer
     |
@@ -35,6 +35,30 @@ The knowledge base covers five schemes:
 > This is a demo knowledge base, not an official government service. Always
 > verify eligibility, amounts, and deadlines on the official government portals
 > listed in each scheme file.
+
+Every answer carries the scheme it came from and a reminder to verify on the
+official portal, because a wrong eligibility rule has a real cost.
+
+### Retrieval
+
+The five scheme files are split into ~36 chunks, one per `##` section
+(`bharat/chunking.py`). A question is matched against those chunks, not
+against whole documents: indexing five whole files meant "top 3" was most of
+the corpus, so every answer was assembled from everything.
+
+Two retrievers are supported:
+
+- **Moss** (`create_index.py`) when `MOSS_PROJECT_ID` and `MOSS_PROJECT_KEY`
+  are set. Semantic + keyword hybrid, best for paraphrased or multilingual
+  questions.
+- **Local BM25** (`bharat/retrieval.py`) when they are not. No account, no
+  network, no extra dependency. Questions that name a scheme stay inside that
+  scheme, and questions that match nothing get an honest "I could not find
+  that" instead of a confident answer drawn from an unrelated file.
+
+The local index is keyword-based, with a small Hindi alias table for the five
+scheme names. It handles the questions in the table below well; it will not
+match a heavy paraphrase. That is what the Moss path is for.
 
 ---
 
@@ -69,6 +93,9 @@ python bot.py --text-mode
 ---
 
 ## Why Moss?
+
+Moss is optional: without credentials the agent runs on the local index
+described above. When you do have an account it is the better retriever.
 
 Moss is a real-time semantic search runtime for conversational AI agents.
 
@@ -147,13 +174,16 @@ Fill in:
 
 | Variable | Where to get it |
 |---|---|
-| `SARVAM_API_KEY` | dashboard.sarvam.ai |
-| `MOSS_PROJECT_ID` | moss.dev |
-| `MOSS_PROJECT_KEY` | moss.dev |
+| `SARVAM_API_KEY` | dashboard.sarvam.ai (required) |
+| `MOSS_PROJECT_ID` | moss.dev (optional — enables the Moss index) |
+| `MOSS_PROJECT_KEY` | moss.dev (optional) |
 
 The other variables have sensible defaults.
 
-### 5. Create the Moss index (run once)
+### 5. Create the Moss index (optional, run once)
+
+Skip this if you are using the local index — it is built from `data/schemes/`
+at startup and needs no setup.
 
 ```bash
 python create_index.py
@@ -231,8 +261,13 @@ bharat-benefits/
 ├── README.md
 ├── .env.example
 ├── requirements.txt
-├── create_index.py        one-time Moss index creation
-├── bot.py          main voice agent (STT -> Moss -> LLM -> TTS)
+├── create_index.py        one-time Moss index creation (optional)
+├── bot.py                 main voice agent (STT -> retrieval -> LLM -> TTS)
+├── bharat/
+│   ├── chunking.py        splits scheme files into sections
+│   ├── retrieval.py       local BM25 index (no account needed)
+│   └── answer.py          context labels, citations, spoken-text cleanup
+├── tests/                 chunking, retrieval ranking, answer formatting
 └── data/
     └── schemes/
         ├── ayushman-bharat.md
@@ -244,8 +279,21 @@ bharat-benefits/
 
 ---
 
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/ -q
+```
+
+The suite covers chunking, retrieval ranking for every example question
+above (including one in Hindi), the off-topic path, and the citation and
+disclaimer formatting. It needs no API key and makes no network calls.
+
 ## Limitations
 
+- The local index is keyword-based. Paraphrased or non-Hindi-language
+  questions may miss; use the Moss index for those.
 - Demo knowledge base only. Scheme information may not reflect the latest
   government guidelines, benefit amounts, or eligibility criteria.
 - Not an official government service. Cannot process applications, verify
