@@ -1,7 +1,7 @@
 # Bharat Benefits Voice Agent
 
 A voice-first RAG assistant for Indian public-benefit schemes, built with
-Moss semantic retrieval and Sarvam AI speech APIs.
+ChromaDB semantic retrieval and Sarvam AI speech APIs.
 
 ---
 
@@ -15,7 +15,7 @@ voice / text input
     |
 Sarvam STT  (saaras:v3)         converts speech to text
     |
-Moss retrieval                  finds relevant scheme snippets from local knowledge base
+ChromaDB retrieval              finds relevant scheme snippets from local knowledge base
     |
 Sarvam Chat Completion          generates a grounded, voice-friendly answer
     |
@@ -46,8 +46,8 @@ The agent supports three input modes:
 Records for a set number of seconds per turn. Simple and predictable.
 
 ```bash
-python bot.py              # 5 seconds per turn
-python bot.py --seconds 8  # 8 seconds per turn
+python main.py              # 5 seconds per turn
+python main.py --seconds 8  # 8 seconds per turn
 ```
 
 **VAD mode** (recommended for natural conversation)
@@ -56,41 +56,41 @@ pause speaking. No need to worry about a timer — just speak naturally and
 the agent picks up when you stop.
 
 ```bash
-python bot.py --vad
+python main.py --vad
 ```
 
 **Text mode** (for debugging)
 Type questions instead of speaking. Useful when testing without a microphone.
 
 ```bash
-python bot.py --text-mode
+python main.py --text-mode
 ```
 
 ---
 
-## Why Moss?
+## Why ChromaDB?
 
-Moss is a real-time semantic search runtime for conversational AI agents.
+ChromaDB is an open-source embedding database designed for AI applications.
 
-- Sub-10 ms retrieval, fast enough for a live voice turn.
-- Simple SDK: `create_index` then `load_index` then `query`. No cluster to manage.
-- Hybrid search (semantic + keyword) with a single `alpha` parameter.
-- Cloud sync: index once, load anywhere.
+- Fully self-hosted, no cloud dependency or API keys needed.
+- Persistent storage on local disk.
+- Built-in cosine similarity search.
+- First-class support for metadata filtering.
+- Automatic embedding generation with sentence-transformers.
+- Zero per-query costs — runs entirely on your machine.
 
-Moss retrieves the top-3 most relevant scheme snippets for each question,
+ChromaDB retrieves the top-3 most relevant scheme snippets for each question,
 which are passed as grounded context to the LLM. This prevents hallucination
 of eligibility rules, amounts, or deadlines.
 
-### Moss SDK methods used
+### ChromaDB features used
 
-| Method | Purpose |
+| Feature | Purpose |
 |---|---|
-| `MossClient(project_id, project_key)` | Initialise the client |
-| `client.create_index(name, documents)` | Index scheme files (run once) |
-| `client.load_index(name)` | Load index into local runtime before querying |
-| `client.query(name, question, QueryOptions(top_k=3, alpha=0.75))` | Retrieve top-3 relevant snippets |
-
-`alpha=0.75` blends 75% semantic search with 25% keyword search.
+| `PersistentClient(path)` | Store embeddings on disk |
+| `collection.upsert()` | Index documents with embeddings |
+| `collection.query()` | Semantic search with metadata |
+| `SentenceTransformer` | Generate embeddings locally |
 
 ---
 
@@ -109,10 +109,10 @@ The combination handles queries in multiple Indian languages out of the box.
 
 ## Setup
 
-### 1. Navigate to the demo folder
+### 1. Navigate to the project folder
 
 ```bash
-cd moss-live-labs/community-demos/voice-agents/bharat-benefits/
+cd bharat-benefits/
 ```
 
 ### 2. Create a virtual environment
@@ -137,6 +137,9 @@ sudo apt-get install libasound2-dev
 `webrtcvad` is only required for `--vad` mode. If you don't need it, the
 rest of the agent works without it.
 
+The first run will automatically download the embedding model
+(`all-MiniLM-L6-v2`, ~80 MB).
+
 ### 4. Set environment variables
 
 ```bash
@@ -148,30 +151,32 @@ Fill in:
 | Variable | Where to get it |
 |---|---|
 | `SARVAM_API_KEY` | dashboard.sarvam.ai |
-| `MOSS_PROJECT_ID` | moss.dev |
-| `MOSS_PROJECT_KEY` | moss.dev |
 
-The other variables have sensible defaults.
+ChromaDB requires no credentials — it stores data locally.
 
-### 5. Create the Moss index (run once)
+### 5. Create the knowledge base (run once, or after adding new schemes)
 
 ```bash
-python create_index.py
+python ingest.py
 ```
 
 Expected output:
 
 ```
 Loading scheme documents from: data/schemes/
-Found 5 file(s):
-  ayushman-bharat.md
-  national-scholarship-portal.md
-  pm-kisan.md
-  pm-vishwakarma.md
-  pmkvy-skill-india.md
+   Found 5 document(s):
+   - ayushman-bharat.md (Ayushman Bharat)
+   - national-scholarship-portal.md (National Scholarship Portal)
+   - pm-kisan.md (Pm Kisan)
+   - pm-vishwakarma.md (Pm Vishwakarma)
+   - pmkvy-skill-india.md (Pmkvy Skill India)
+   Generating embeddings ...
+   Ingested 23 chunk(s) from 5 document(s).
 
-Creating Moss index 'bharat-benefits' ...
-Index 'bharat-benefits' created with 5 document(s).
+Knowledge base ready:
+   Collection : bharat-benefits
+   Documents  : 23 chunk(s)
+   Path       : ./chroma_data
 ```
 
 ---
@@ -180,16 +185,16 @@ Index 'bharat-benefits' created with 5 document(s).
 
 ```bash
 # Fixed window, 5 seconds per turn (default)
-python bot.py
+python main.py
 
 # Fixed window, custom duration
-python bot.py --seconds 8
+python main.py --seconds 8
 
 # VAD mode - stops when you pause (most natural)
-python bot.py --vad
+python main.py --vad
 
 # Text mode - type questions (no mic needed)
-python bot.py --text-mode
+python main.py --text-mode
 ```
 
 ---
@@ -213,13 +218,16 @@ python bot.py --text-mode
 
 ```
 SARVAM_API_KEY          Sarvam AI subscription key (required)
-MOSS_PROJECT_ID         Moss project ID (required)
-MOSS_PROJECT_KEY        Moss project key (required)
-MOSS_INDEX_NAME         Index name, default: bharat-benefits (optional)
 SARVAM_STT_MODEL        STT model, default: saaras:v3 (optional)
 SARVAM_CHAT_MODEL       Chat model, default: sarvam-105b (optional)
 SARVAM_TTS_MODEL        TTS model, default: bulbul:v3 (optional)
 SARVAM_TTS_SPEAKER      TTS speaker voice, default: priya (optional)
+CHROMA_DB_PATH          ChromaDB storage path, default: ./chroma_data (optional)
+CHROMA_COLLECTION       Collection name, default: bharat-benefits (optional)
+EMBEDDING_MODEL         Embedding model, default: all-MiniLM-L6-v2 (optional)
+TOP_K                   Results per query, default: 3 (optional)
+CHUNK_SIZE              Max chars per chunk, default: 500 (optional)
+CHUNK_OVERLAP           Overlap between chunks, default: 50 (optional)
 ```
 
 ---
@@ -231,15 +239,24 @@ bharat-benefits/
 ├── README.md
 ├── .env.example
 ├── requirements.txt
-├── create_index.py        one-time Moss index creation
-├── bot.py          main voice agent (STT -> Moss -> LLM -> TTS)
-└── data/
-    └── schemes/
-        ├── ayushman-bharat.md
-        ├── pm-kisan.md
-        ├── pm-vishwakarma.md
-        ├── national-scholarship-portal.md
-        └── pmkvy-skill-india.md
+├── ingest.py            knowledge base ingestion script
+├── main.py              main voice agent (STT -> ChromaDB -> LLM -> TTS)
+├── bharat_benefits/
+│   ├── __init__.py
+│   └── services/
+│       ├── __init__.py
+│       ├── knowledge_base.py  ChromaDB retrieval
+│       ├── agent.py           LLM interaction
+│       └── audio.py           recording & playback
+├── data/
+│   └── schemes/
+│       └── central/
+│           ├── ayushman-bharat.md
+│           ├── pm-kisan.md
+│           ├── pm-vishwakarma.md
+│           ├── national-scholarship-portal.md
+│           └── pmkvy-skill-india.md
+└── chroma_data/         created by ingest.py (vector store)
 ```
 
 ---
@@ -252,6 +269,7 @@ bharat-benefits/
   beneficiary status, or access real-time government databases.
 - Audio playback requires `simpleaudio`. If unavailable, audio is saved to disk.
 - VAD mode requires `webrtcvad`. Falls back to fixed-window if not installed.
+- Embedding model is downloaded on first run (~80 MB).
 
 Official portals for verification:
 
@@ -267,7 +285,8 @@ Official portals for verification:
 
 | Package | Version | Purpose |
 |---|---|---|
-| `moss` | >=1.0.0 | Moss semantic search SDK |
+| `chromadb` | >=0.5.0 | Open-source vector database |
+| `sentence-transformers` | >=3.0.0 | Embedding generation |
 | `python-dotenv` | >=1.0.0 | Load .env credentials |
 | `httpx` | >=0.27.0 | HTTP client for Sarvam API calls |
 | `sounddevice` | >=0.4.6 | Microphone recording and playback |
