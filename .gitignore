@@ -13,5 +13,5 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
-.vscode/
+.vscode
 __pycache*
